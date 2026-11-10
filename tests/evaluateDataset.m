@@ -9,7 +9,7 @@ function evaluateDataset(mode, thr, csvName)
 %   Results go to tests/results.csv (or tests/results_<csv name>.csv for another label file).
 if nargin < 1 || isempty(mode), mode = 'eye'; end
 if nargin < 2 || isempty(thr),  thr  = 0.30;  end
-if nargin < 3 || isempty(csvName), csvName = 'ground_truth.csv'; end
+if nargin < 3 || isempty(csvName), csvName = 'ground_truth_cew.csv'; end
 root = fileparts(fileparts(mfilename('fullpath')));
 addpath(genpath(root));
 imgDir = fullfile(root, 'test_images');
