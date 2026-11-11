@@ -1,4 +1,4 @@
-function [out, mag] = edgeDetect(img, method, thr)
+function [out, mag, gx, gy] = edgeDetect(img, method, thr)
 % EDGEDETECT  Edge detection with Sobel, Prewitt or Canny operators.
 %   out = edgeDetect(img, 'sobel'|'prewitt'|'canny', thr)
 %   thr is a fraction (0-1) of the maximum gradient magnitude.
@@ -10,7 +10,7 @@ switch lower(method)
     case 'prewitt', kx = [-1 0 1; -1 0 1; -1 0 1];
     case 'canny'
         out = uint8(cannyEdge(g, 1.4, thr)) * 255;
-        mag = [];
+        mag = [];  gx = [];  gy = [];
         return;
     otherwise, error('Unknown edge method: %s', method);
 end
