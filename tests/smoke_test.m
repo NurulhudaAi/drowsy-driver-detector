@@ -17,7 +17,13 @@ for m = {'nearest','bilinear','bicubic'}, check(['scale-' m{1}], scaleImg(rgb,1.
 check('rotateImg', rotateImg(rgb,30,'bilinear',true)); check('shearImg', shearImg(rgb,0.3,0));
 check('warpForward', warpForward(rgb, tformMatrix('rotate',20))); check('radialCorrect', radialCorrect(rgb,0.2,0));
 [~,s] = registerTranslation(gry, translateImg(gry,12,-7)); fprintf('  registration shift = [%d %d] (expect about [7 -12])\n', s);
-R = drowsyPipeline(rgb, 'face', 0.3); check('drowsyPipeline', R.overlay);
+R = drowsyPipeline(rgb, 'face', 0.3, 'Method', 'rule'); check('drowsyPipeline-rule', R.overlay);
+check('eyeFeatures', eyeFeatures(gry(1:40,1:60)));
+Xs = [randn(20,5); randn(20,5)+3];  ys = [zeros(20,1); ones(20,1)];
+pm = knnPredict(knnTrain(Xs, ys, 3), Xs);  fprintf('  knn self-test accuracy = %.0f %%\n', 100*mean(pm == ys));
+D = detectFaceEyes(rgb);  check(['detectFaceEyes (' D.method ')'], D.eyes);
+check('drawBoxes', drawBoxes(rgb, D.eyes));
+R = drowsyPipeline(rgb, 'face'); check(['drowsyPipeline-' R.method], R.overlay);
 fprintf('\nAll smoke tests passed.\n');
 
 function check(name, v)

@@ -3,12 +3,15 @@ function demo_live(source, thr, varargin)
 %   demo_live                      webcam, threshold 0.30
 %   demo_live('webcam')            same
 %   demo_live('clip.mp4')          video file (any format VideoReader supports)
-%   demo_live(source, thr)         custom openness threshold
+%   demo_live(source, thr)         custom openness threshold ([] = default of the method)
 %   demo_live(..., 'Name', value)  options:
 %       'ClosedSeconds' (1.0)  eyes must stay closed this long before the DROWSY alarm
 %                              (normal blinks last 0.1-0.4 s and are ignored)
 %       'Width'         (320)  frames are downscaled to this width for speed
 %       'Mode'          ('face') 'face' or 'eye' (passed to drowsyPipeline)
+%       'Method'        ('auto') 'auto' | 'knn' (trained model) | 'rule' (baseline)
+%       'TiltDegrees'   (25)   head-tilt warning when |tilt| stays above this for 2 s
+%   The title also shows the blink rate (blinks per minute) and the head tilt.
 %       'SaveAs'        ('')   e.g. 'report/live_demo.mp4' -> records the figure
 %   Close the figure window to stop.
 %
@@ -17,8 +20,9 @@ function demo_live(source, thr, varargin)
 
 addpath(genpath(fileparts(fileparts(mfilename('fullpath')))));
 if nargin < 1 || isempty(source), source = 'webcam'; end
-if nargin < 2 || isempty(thr),    thr = 0.30;        end
-o = struct('ClosedSeconds', 1.0, 'Width', 320, 'Mode', 'face', 'SaveAs', '');
+if nargin < 2, thr = []; end
+o = struct('ClosedSeconds', 1.0, 'Width', 320, 'Mode', 'face', 'SaveAs', '', ...
+           'Method', 'auto', 'TiltDegrees', 25);
 for i = 1:2:numel(varargin), o.(varargin{i}) = varargin{i+1}; end
 
 % ---------------- open the source ----------------
@@ -47,10 +51,10 @@ fig = figure('Name', 'Drowsy Driver Detection - live', 'NumberTitle', 'off', ...
 axF = subplot(2, 2, [1 3]);  hF = imshow(zeros(240, 320, 3, 'uint8'), 'Parent', axF);  hold(axF, 'on');
 hBox = rectangle(axF, 'Position', [1 1 1 1], 'EdgeColor', 'y', 'LineWidth', 2);
 hTxt = title(axF, 'starting...', 'FontSize', 16);
-axE = subplot(2, 2, 2);  hE = imshow(zeros(40, 128, 3, 'uint8'), 'Parent', axE);  title(axE, 'Eye region (dark blob in red)');
+axE = subplot(2, 2, 2);  hE = imshow(zeros(40, 128, 3, 'uint8'), 'Parent', axE);  title(axE, 'Eyes (green = open, red = closed)');
 axS = subplot(2, 2, 4);  hold(axS, 'on');  grid(axS, 'on');
 hS  = plot(axS, NaN, NaN, 'b-', 'LineWidth', 1.5);
-hT  = plot(axS, [0 1], [thr thr], 'r--');
+hT  = plot(axS, [0 1], [0.5 0.5], 'r--');
 xlabel(axS, 'time (s)');  ylabel(axS, 'openness score');  ylim(axS, [0 1.2]);
 legend(axS, {'score', 'threshold'}, 'Location', 'northwest');
 
@@ -63,6 +67,7 @@ end
 win = 15;                       % seconds of score history shown in the plot
 ts = [];  sc = [];
 closedSince = NaN;  alarm = false;  nFrames = 0;  tic0 = tic;
+blinkTimes = [];  tiltSince = NaN;
 while ishandle(fig) && hasMore()
     frame = getFrame();
     if size(frame, 3) == 1, frame = repmat(frame, [1 1 3]); end
@@ -70,7 +75,8 @@ while ishandle(fig) && hasMore()
     if s < 1, frame = scaleImg(frame, s, s, 'bilinear'); end   % Module 3 resize
     t = getTime();
 
-    R = drowsyPipeline(frame, o.Mode, thr);
+    R = drowsyPipeline(frame, o.Mode, thr, 'Method', o.Method);
+    if nFrames == 0, set(hT, 'YData', [R.thr R.thr]); end
     if ~ishandle(fig), break; end                      % window closed while processing
     closedNow = strcmp(R.label, 'DROWSY');            % this frame: eye looks closed
 
@@ -79,7 +85,18 @@ while ishandle(fig) && hasMore()
         if isnan(closedSince), closedSince = t; end
         newAlarm = (t - closedSince) >= o.ClosedSeconds;
     else
+        if ~isnan(closedSince) && (t - closedSince) < o.ClosedSeconds
+            blinkTimes(end+1) = t;                    %#ok<AGROW>  short closure = blink
+        end
         closedSince = NaN;  newAlarm = false;
+    end
+    blinkTimes = blinkTimes(blinkTimes >= t - 60);
+    bpm = numel(blinkTimes) * 60 / max(min(t, 60), 1);  % blinks per minute (last 60 s)
+    if abs(R.tilt) >= o.TiltDegrees                   % head tilted for a while?
+        if isnan(tiltSince), tiltSince = t; end
+        tiltWarn = (t - tiltSince) >= 2;
+    else
+        tiltSince = NaN;  tiltWarn = false;
     end
     if newAlarm && ~alarm, beep; end
     alarm = newAlarm;
@@ -100,15 +117,20 @@ while ishandle(fig) && hasMore()
     set(hT, 'XData', [max(0, t-win) max(t, 1)]);
     xlim(axS, [max(0, t-win) max(t, 1)]);
 
+    extra = sprintf('   |  blinks %.0f/min  |  tilt %+.0f deg', bpm, R.tilt);
     if alarm
         hTxt.String = sprintf('DROWSY!  eyes closed %.1f s', t - closedSince);
         hTxt.Color = [0.85 0 0];  hBox.EdgeColor = 'r';  fig.Color = [1 0.85 0.85];
     elseif closedNow
-        hTxt.String = sprintf('eyes closed (%.1f s)   score %.2f', t - closedSince, R.score);
+        hTxt.String = [sprintf('eyes closed (%.1f s)   score %.2f', t - closedSince, R.score) extra];
         hTxt.Color = [0.8 0.5 0];  hBox.EdgeColor = [1 0.6 0];  fig.Color = 'w';
     else
-        hTxt.String = sprintf('ALERT   score %.2f   (%.1f fps)', R.score, fps);
+        hTxt.String = [sprintf('ALERT   score %.2f   (%.1f fps)', R.score, fps) extra];
         hTxt.Color = [0 0.5 0];  hBox.EdgeColor = 'g';  fig.Color = 'w';
+        if tiltWarn
+            hTxt.String = [sprintf('HEAD TILT %+.0f deg - take a break?', R.tilt) extra];
+            hTxt.Color = [0.85 0.45 0];  hBox.EdgeColor = [1 0.6 0];
+        end
     end
     drawnow limitrate;
 
