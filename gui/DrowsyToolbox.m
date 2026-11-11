@@ -12,8 +12,8 @@ fig = uifigure('Name', 'Smart Image Processing Toolbox - Drowsy Driver Detection
                'Position', [80 60 1150 650]);
 gl = uigridlayout(fig, [1 2]);  gl.ColumnWidth = {300, '1x'};
 ctrl = uipanel(gl, 'Title', 'Controls');
-cl = uigridlayout(ctrl, [12 1]);
-cl.RowHeight = {34, 20, 28, 20, 28, 20, 36, 20, 36, 34, 34, '1x'};
+cl = uigridlayout(ctrl, [13 1]);
+cl.RowHeight = {34, 20, 28, 20, 28, 20, 36, 20, 36, 34, 34, 34, '1x'};
 btnLoad  = uibutton(cl, 'Text', 'Load image...', 'ButtonPushedFcn', @onLoad);
 uilabel(cl, 'Text', 'Module');
 ddModule = uidropdown(cl, 'Items', {'Enhancement','Segmentation & Edges','Geometry','Drowsy Driver Detection'}, ...
@@ -26,6 +26,7 @@ lbl2 = uilabel(cl, 'Text', 'Parameter 2');
 sl2  = uislider(cl, 'ValueChangingFcn', @(s,e) setLbl(lbl2, 2, e.Value), 'ValueChangedFcn', @(s,e) setLbl(lbl2, 2, s.Value));
 btnApply = uibutton(cl, 'Text', 'Apply', 'FontWeight', 'bold', 'ButtonPushedFcn', @onApply);
 btnSave  = uibutton(cl, 'Text', 'Save result...', 'ButtonPushedFcn', @onSave);
+btnLive  = uibutton(cl, 'Text', 'Live demo (webcam / video)...', 'ButtonPushedFcn', @onLive);
 lblStatus = uilabel(cl, 'Text', 'Load an image to begin.', 'WordWrap', 'on', 'VerticalAlignment', 'top', 'FontSize', 14);
 
 al = uigridlayout(gl, [1 2]);
@@ -74,8 +75,10 @@ addT('Geometry', 'Resize - bicubic', P('Scale',0.25,6,3), none, @(I,a,b) scaleIm
 addT('Geometry', 'Forward mapping rotation (shows holes)', P('Angle (deg)',-180,180,30), none, @fwdRotate);
 addT('Geometry', 'Radial distortion correction', P('k1',-0.6,0.6,0.2), P('k2',-0.3,0.3,0), @(I,a,b) radialCorrect(I, a, b));
 % Drowsy driver
-addT('Drowsy Driver Detection', 'Full pipeline on FACE image', P('Openness threshold',0.05,1,0.30), none, @runFace);
-addT('Drowsy Driver Detection', 'Pipeline on cropped EYE image', P('Openness threshold',0.05,1,0.30), none, @runEye);
+addT('Drowsy Driver Detection', 'Trained model on FACE image', P('Openness threshold',0.05,0.95,0.50), none, @(I,a,b) runDrowsy(I,a,'face','auto'));
+addT('Drowsy Driver Detection', 'Trained model on cropped EYE image', P('Openness threshold',0.05,0.95,0.50), none, @(I,a,b) runDrowsy(I,a,'eye','auto'));
+addT('Drowsy Driver Detection', 'Rule-based baseline on FACE image', P('Openness threshold',0.05,1,0.30), none, @(I,a,b) runDrowsy(I,a,'face','rule'));
+addT('Drowsy Driver Detection', 'Rule-based baseline on cropped EYE image', P('Openness threshold',0.05,1,0.30), none, @(I,a,b) runDrowsy(I,a,'eye','rule'));
 
 onModule();
 
@@ -170,6 +173,30 @@ onModule();
         imwrite(res, fullfile(p, f));
     end
 
+    function onLive(~, ~)
+        choice = uiconfirm(fig, ['Run the drowsy pipeline on live frames. ' ...
+            'Close the live window to stop.'], 'Live demo', ...
+            'Options', {'Webcam', 'Video file...', 'Cancel'}, 'DefaultOption', 1, 'CancelOption', 3);
+        if strcmp(choice, 'Cancel'), return; end
+        thr = [];  method = 'auto';                   % use the slider if the drowsy module is selected
+        if strcmp(ddModule.Value, 'Drowsy Driver Detection')
+            thr = sl1.Value;
+            if contains(ddTech.Value, 'Rule-based'), method = 'rule'; end
+        end
+        mode = 'face';
+        src = 'webcam';
+        if strcmp(choice, 'Video file...')
+            [f, p] = uigetfile({'*.mp4;*.avi;*.mov;*.m4v;*.wmv', 'Videos'});
+            if isequal(f, 0), return; end
+            src = fullfile(p, f);
+        end
+        try
+            demo_live(src, thr, 'Mode', mode, 'Method', method);
+        catch ME
+            if isvalid(fig), uialert(fig, ME.message, 'Live demo'); end
+        end
+    end
+
 % ----- special handlers -----
     function out = cmpEdges(I, a, ~)
         compareEdges(I, a);
@@ -183,17 +210,24 @@ onModule();
         out = warpForward(I, M);
     end
 
-    function out = runFace(I, thr, ~)
-        out = showDrowsy(drowsyPipeline(I, 'face', thr));
+    function out = runDrowsy(I, thr, mode, method)
+        R = drowsyPipeline(I, mode, thr, 'Method', method);
+        if strcmpi(mode, 'face') && ~isempty(R.eyes)
+            vis = drawBoxes(R.enhanced, R.eyes, [255 255 0], 2);     % eye boxes on the image
+            if ~isempty(R.face), vis = drawBoxes(vis, R.face, [0 160 255], 2); end
+            ov = R.overlay;                                          % eye tiles below the image
+            f = size(vis,2) / size(ov,2);
+            ov = scaleImg(ov, f, f, 'nearest');
+            out = cat(1, vis, ov(:, 1:min(end, size(vis,2)), :));
+        else
+            out = R.overlay;
+        end
+        showDrowsy(R);
     end
 
-    function out = runEye(I, thr, ~)
-        out = showDrowsy(drowsyPipeline(I, 'eye', thr));
-    end
-
-    function out = showDrowsy(R)
-        out = R.overlay;
-        lblStatus.Text = sprintf('%s\nOpenness score = %.2f (threshold %.2f)', R.label, R.score, R.thr);
+    function showDrowsy(R)
+        lblStatus.Text = sprintf('%s\nOpenness score = %.2f (threshold %.2f)\nMethod: %s, eyes found by: %s', ...
+                                 R.label, R.score, R.thr, R.method, R.locator);
         if strcmp(R.label, 'DROWSY'), lblStatus.FontColor = [0.8 0 0]; else, lblStatus.FontColor = [0 0.5 0]; end
     end
 end
